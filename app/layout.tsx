@@ -5,6 +5,7 @@ import { GeistMono } from "geist/font/mono"
 import { Analytics } from "@vercel/analytics/next"
 import { Suspense } from "react"
 import Footer from "@/components/footer"
+import { Chatbot } from "@/components/chatbot"
 import "./globals.css"
 
 export const metadata: Metadata = {
@@ -26,6 +27,9 @@ export default function RootLayout({
             <Suspense fallback={<div>Loading...</div>}>{children}</Suspense>
           </main>
           <Footer />
+          <Suspense fallback={null}>
+            <Chatbot />
+          </Suspense>
         </div>
         <Analytics />
       </body>

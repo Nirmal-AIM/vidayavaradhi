@@ -2,6 +2,8 @@ import type { NextRequest } from "next/server"
 import { SignJWT, jwtVerify } from "jose"
 import { cookies } from "next/headers"
 import bcrypt from "bcryptjs"
+import { query } from "./db"
+
 
 const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || "your-secret-key-change-in-production")
 
@@ -25,9 +27,6 @@ export interface Session {
   exp: number
 }
 
-// In-memory user store (in production, use a proper database)
-const users = new Map<string, User & { passwordHash: string }>()
-
 export async function hashPassword(password: string): Promise<string> {
   return bcrypt.hash(password, 12)
 }
@@ -44,45 +43,66 @@ export async function createUser(userData: {
 }): Promise<User> {
   const userId = `VV${Date.now().toString().slice(-8)}`
   const passwordHash = await hashPassword(userData.password)
-
-  const user: User & { passwordHash: string } = {
-    id: userId,
-    email: userData.email,
-    role: userData.role,
-    name: userData.name,
-    createdAt: new Date(),
-    passwordHash,
-  }
-
-  users.set(userId, user)
-  users.set(userData.email, user) // Also store by email for login
-
-  return {
-    id: user.id,
-    email: user.email,
-    role: user.role,
-    name: user.name,
-    createdAt: user.createdAt,
+  
+  try {
+    await query(
+      `INSERT INTO users (id, email, password_hash, name, role) 
+       VALUES (?, ?, ?, ?, ?)`,
+      [userId, userData.email, passwordHash, userData.name, userData.role]
+    );
+    
+    // Create empty profile
+    await query(
+      `INSERT INTO user_profiles (user_id) VALUES (?)`,
+      [userId]
+    );
+    
+    return {
+      id: userId,
+      email: userData.email,
+      role: userData.role,
+      name: userData.name,
+      createdAt: new Date(),
+    };
+  } catch (error) {
+    console.error("Error creating user:", error);
+    throw new Error("Failed to create user");
   }
 }
 
 export async function authenticateUser(email: string, password: string): Promise<User | null> {
-  const user = users.get(email)
-  if (!user) return null
-
-  const isValid = await verifyPassword(password, user.passwordHash)
-  if (!isValid) return null
-
-  // Update last login
-  user.lastLogin = new Date()
-
-  return {
-    id: user.id,
-    email: user.email,
-    role: user.role,
-    name: user.name,
-    createdAt: user.createdAt,
-    lastLogin: user.lastLogin,
+  try {
+    const users = await query<any[]>(
+      `SELECT id, email, password_hash, name, role, created_at, last_login 
+       FROM users 
+       WHERE email = ? AND is_active = TRUE`,
+      [email]
+    );
+    
+    if (!users || users.length === 0) return null;
+    
+    const user = users[0];
+    const isValid = await verifyPassword(password, user.password_hash);
+    if (!isValid) return null;
+    
+    // Update last login
+    const now = new Date();
+    await query(
+      `UPDATE users SET last_login = ? WHERE id = ?`,
+      [now, user.id]
+    );
+    
+    return {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      name: user.name,
+      createdAt: new Date(user.created_at),
+      lastLogin: now,
+    };
+  } catch (error) {
+    console.error("Authentication error:", error);
+    return null;
   }
 }
 
@@ -110,6 +130,18 @@ export async function createSession(user: User): Promise<string> {
     path: "/",
   })
 
+  // Store session in database
+  try {
+    const expiresAt = new Date(Date.now() + SESSION_DURATION);
+    await query(
+      `INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)`,
+      [token.substring(0, 255), user.id, expiresAt]
+    );
+  } catch (error) {
+    console.error("Error storing session:", error);
+    // Continue even if session storage fails
+  }
+
   return token
 }
 
@@ -128,6 +160,21 @@ export async function verifySession(request?: NextRequest): Promise<Session | nu
 
     if (!token) return null
 
+    // Verify token is valid in database
+    try {
+      const sessions = await query<any[]>(
+        `SELECT * FROM sessions WHERE id = ? AND expires_at > NOW()`,
+        [token.substring(0, 255)]
+      );
+      
+      if (!sessions || sessions.length === 0) {
+        return null;
+      }
+    } catch (error) {
+      console.error("Session database verification failed:", error);
+      // Continue with JWT verification even if database check fails
+    }
+
     const { payload } = await jwtVerify(token, JWT_SECRET)
     return payload as Session
   } catch (error) {
@@ -138,6 +185,20 @@ export async function verifySession(request?: NextRequest): Promise<Session | nu
 
 export async function destroySession(): Promise<void> {
   const cookieStore = cookies()
+  const token = cookieStore.get("session")?.value
+  
+  // Remove from database if token exists
+  if (token) {
+    try {
+      await query(
+        `DELETE FROM sessions WHERE id = ?`,
+        [token.substring(0, 255)]
+      );
+    } catch (error) {
+      console.error("Error removing session from database:", error);
+    }
+  }
+  
   cookieStore.delete("session")
 }
 
@@ -145,16 +206,28 @@ export async function getCurrentUser(): Promise<User | null> {
   const session = await verifySession()
   if (!session) return null
 
-  const user = users.get(session.userId)
-  if (!user) return null
-
-  return {
-    id: user.id,
-    email: user.email,
-    role: user.role,
-    name: user.name,
-    createdAt: user.createdAt,
-    lastLogin: user.lastLogin,
+  try {
+    const users = await query<any[]>(
+      `SELECT id, email, name, role, created_at, last_login 
+       FROM users 
+       WHERE id = ? AND is_active = TRUE`,
+      [session.userId]
+    );
+    
+    if (!users || users.length === 0) return null;
+    
+    const user = users[0];
+    return {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      name: user.name,
+      createdAt: new Date(user.created_at),
+      lastLogin: user.last_login ? new Date(user.last_login) : undefined,
+    };
+  } catch (error) {
+    console.error("Error fetching current user:", error);
+    return null;
   }
 }
 

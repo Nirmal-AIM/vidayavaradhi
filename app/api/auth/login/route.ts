@@ -1,26 +1,49 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { authenticateUser, createSession, sanitizeInput, validateEmail } from "@/lib/auth"
 
+import { query } from "@/lib/db"
+
 // Rate limiting for login attempts
-const loginAttempts = new Map<string, { count: number; resetTime: number }>()
 const MAX_LOGIN_ATTEMPTS = 5
 const LOCKOUT_DURATION = 15 * 60 * 1000 // 15 minutes
 
-function checkLoginAttempts(ip: string): boolean {
-  const now = Date.now()
-  const attempts = loginAttempts.get(ip)
-
-  if (!attempts || now > attempts.resetTime) {
-    loginAttempts.set(ip, { count: 1, resetTime: now + LOCKOUT_DURATION })
+async function checkLoginAttempts(ip: string): Promise<boolean> {
+  try {
+    const now = new Date()
+    const resetTime = new Date(now.getTime() + LOCKOUT_DURATION)
+    
+    // Check if IP exists and get attempt count
+    const results = await query<any[]>(
+      `SELECT * FROM login_attempts WHERE ip = ? AND reset_time > NOW()`,
+      [ip]
+    )
+    
+    if (!results || results.length === 0) {
+      // First attempt, create record
+      await query(
+        `INSERT INTO login_attempts (ip, attempt_count, reset_time) VALUES (?, 1, ?)`,
+        [ip, resetTime]
+      )
+      return true
+    }
+    
+    const attempt = results[0]
+    
+    if (attempt.attempt_count >= MAX_LOGIN_ATTEMPTS) {
+      return false
+    }
+    
+    // Increment attempt count
+    await query(
+      `UPDATE login_attempts SET attempt_count = attempt_count + 1 WHERE ip = ?`,
+      [ip]
+    )
+    
     return true
+  } catch (error) {
+    console.error("Error checking login attempts:", error)
+    return true // Allow login on error to prevent lockout
   }
-
-  if (attempts.count >= MAX_LOGIN_ATTEMPTS) {
-    return false
-  }
-
-  attempts.count++
-  return true
 }
 
 export async function POST(request: NextRequest) {
@@ -62,7 +85,7 @@ export async function POST(request: NextRequest) {
     await createSession(user)
 
     // Reset login attempts on successful login
-    loginAttempts.delete(ip)
+    await query(`DELETE FROM login_attempts WHERE ip = ?`, [ip])
 
     return NextResponse.json({
       success: true,
