@@ -9,6 +9,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Send, X, MessageSquare, Bot, User, LogIn, BookOpen, Lightbulb, HelpCircle, Info } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import { useAuthSession } from "@/hooks/use-auth-session";
+import styles from './chatbot.module.css';
 
 interface Message {
   id: string;

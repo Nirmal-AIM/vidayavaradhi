@@ -7,6 +7,7 @@ import { Suspense } from "react"
 import Footer from "@/components/footer"
 import { Chatbot } from "@/components/chatbot"
 import "./globals.css"
+import '../styles/chatbot.module.css'
 
 export const metadata: Metadata = {
   title: "VidyaVaradhi - AI-Powered Learning Platform",
